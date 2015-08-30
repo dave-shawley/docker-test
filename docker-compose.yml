@@ -1,0 +1,6 @@
+mongo:
+  image: "mongo:3"
+  expose:
+    - 27017
+  ports:
+    - 27017

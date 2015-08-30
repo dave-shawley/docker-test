@@ -1,0 +1,4 @@
+include *requirements.txt
+graft docs
+graft examples
+global-exclude *.pyc

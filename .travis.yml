@@ -1,0 +1,33 @@
+language: python
+sudo: required
+env:
+  DOCKER_COMPOSE_VERSION: 1.4.0
+services:
+  - docker
+python:
+  - 2.7
+  - 3.3
+  - 3.4
+  - pypy
+before_install:
+  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
+  - chmod +x docker-compose
+  - sudo mv docker-compose /usr/local/bin
+install:
+  - pip install -r requirements.txt -r test-requirements.txt
+script:
+  - docker-compose build
+  - docker-compose up -d
+  - nosetests
+after_script:
+  - docker-compose stop
+  - docker-compose rm -f
+deploy:
+  provider: pypi
+  user: daveshawley
+  distributions: sdist bdist_wheel
+  on:
+    tags: true
+    repo: dave-shawley/glinda
+    all_branches: true
+    python: 3.4
