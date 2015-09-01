@@ -185,10 +185,52 @@ class DockerDiscoveryMixin(EnvironmentMixin):
 
 
 class TestCase(DockerDiscoveryMixin, EnvironmentMixin, unittest.TestCase):
+    """
+    Test case imbued with Docker super powers.
+
+    When your tests run, they can make use of environment as if
+    they were running in a docker container linked into the active
+    docker compose environment.  The :meth:`install_docker_environment`
+    method is called to install the docker environment variables in
+    :meth:`setUp`, so they will be available to your test code.
+
+    """
+
+    def setUp(self):
+        """Install the docker linking environment variables."""
+        self.install_docker_environment()
+        super(TestCase, self).setUp()
 
     def install_docker_environment(self):
         """
         Creates environment variables based on :attr:`docker_services`
+
+        This method walks the :attr:`docker_services` attribute and exports
+        a handful of environment variables for each service port.  For a
+        service named ``$SERVICE`` that listens on a well-known ``$PROTOCOL``
+        port ``$PORT`` the following environment variables will be exposed:
+
+        - **${SERVICE}_PORT_${PORT}_${PROTOCOL}** the endpoint information
+          as a URL using ``tcp`` or ``udp`` as the scheme.
+        - **${SERVICE}_PORT_${PORT}_${PROTOCOL}_ADDR** the IP address that
+          the service is available on.  This is the IP address of the
+          docker host.
+        - **${SERVICE}_PORT_${PORT}_${PROTOCOL}_PORT** the port number on
+          the docker host that is routed to the service.
+        - **${SERVICE}_PORT_${PORT}_${PROTOCOL}_PROTO** the protocol that
+          owns the port number (e.g., UDP, TCP)
+
+        For example, if a database instance is listening on port 5432 and
+        the docker host, 192.168.99.100, exposes the service on port 32768,
+        then the following environment variables are exported
+
+        .. code-block:: bash
+
+            POSTGRES_PORT_5432_TCP=tcp://192.168.99.100:32768
+            POSTGRES_PORT_5432_TCP_ADDR=192.168.99.100
+            POSTGRES_PORT_5432_TCP_PORT=32768
+            POSTGRES_PORT_5432_TCP_PROTO=tcp
+
         """
         for service_key, service_info in self.docker_services.items():
             service_name, _ = service_key.split(':')
@@ -196,8 +238,22 @@ class TestCase(DockerDiscoveryMixin, EnvironmentMixin, unittest.TestCase):
 
     def process_docker_service(self, name, protocol, ip_address,
             public_port, private_port):
+        """
+        Process a single docker service entry.
 
+        :param str name: name of the service as docker-compose knows it
+        :param str protocol: service protocol (usually ``tcp``)
+        :param str ip_address: IP address that the service is available on
+        :param int public_port: port that the service is available on.  This
+            port is bound on the docker host (e.g., ``ip_address``).
+        :param int private_port: internal port that the service is listening
+            on.  This is the port that the application is listening on
+            inside of the container.
 
+        You can override or extend this method to set any application
+        specific environment variables.
+
+        """
         _logger.debug('setting environment for %s', name)
         base_key = '{0}_PORT_{1}_{2}'.format(name.upper(), private_port,
                                              protocol.upper())
