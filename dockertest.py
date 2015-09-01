@@ -92,9 +92,9 @@ class EnvironmentMixin(object):
         os.environ.pop(name, None)
 
 
-class DockerEnvironmentMixin(object):
+class DockerDiscoveryMixin(EnvironmentMixin):
     """
-    Mix-in that mimics the environment variables set by docker linking.
+    Mix-in that discovers services exposed by a docker host.
 
     .. attribute:: docker_services
 
@@ -121,45 +121,19 @@ class DockerEnvironmentMixin(object):
     @classmethod
     def setUpClass(cls):
         """Query docker host and build :attr:`docker_services`"""
-        super(DockerEnvironmentMixin, cls).setUpClass()
-        args = docker.utils.kwargs_from_env()
-        try:
-            args['tls'].assert_hostname = False
-        except KeyError:
-            pass
-
-        cls.docker_client = docker.Client(**args)
-        docker_url = parse.urlsplit(cls.docker_client.base_url)
-        cls.docker_ip = docker_url.hostname
+        super(DockerDiscoveryMixin, cls).setUpClass()
 
         curdir = os.path.abspath(os.path.curdir)
         dirname = os.path.basename(curdir)
         cls.docker_compose_project = re.sub('[^A-Za-z0-9]', '', dirname)
         cls.docker_services = {}
 
+        cls._connect_to_docker()
         for container_info in cls.docker_client.containers():
             try:
-                labels = container_info['Labels']
-                if (labels['com.docker.compose.project'] !=
-                        cls.docker_compose_project):
-                    _logger.debug('skipping %s, project is %s',
-                                  container_info['Id'],
-                                  labels['com.docker.compose.project'])
-                    continue
-
-                service_name = labels['com.docker.compose.service']
-                service = cls._NAME_RE.sub('_', service_name).upper()
-                for port_info in container_info['Ports']:
-                    key = '{0}:{1}'.format(service_name,
-                                           port_info['PrivatePort'])
-                    cls.docker_services[key] = {
-                        'protocol': port_info['Type'],
-                        'ip_address': cls.docker_ip,
-                        'port': port_info['PublicPort'],
-                        'internal-port': port_info['PrivatePort'],
-                    }
-                    _logger.debug('added %s => %r', key,
-                                  cls.docker_services[key])
+                details = cls._extract_container_details(container_info)
+                if details:
+                    cls.docker_services.update(details)
 
             except KeyError:
                 _logger.debug('skipping container %s', container_info['Id'],
@@ -170,7 +144,47 @@ class DockerEnvironmentMixin(object):
         if cls.docker_client:
             cls.docker_client.close()
             cls.docker_client = None
-        super(DockerEnvironmentMixin, cls).tearDownClass()
+        super(DockerDiscoveryMixin, cls).tearDownClass()
+
+
+    @classmethod
+    def _connect_to_docker(cls):
+        args = docker.utils.kwargs_from_env()
+        try:
+            args['tls'].assert_hostname = False
+        except KeyError:
+            pass
+
+        cls.docker_client = docker.Client(**args)
+        docker_url = parse.urlsplit(cls.docker_client.base_url)
+        cls.docker_ip = docker_url.hostname
+
+    @classmethod
+    def _extract_container_details(cls, container_info):
+        project = cls.docker_compose_project
+        labels = container_info['Labels']
+        if (labels['com.docker.compose.project'] !=
+                cls.docker_compose_project):
+            _logger.debug('skipping %s, wrong project %s',
+                          container_info['id'],
+                          labels['com.docker.compose.project'])
+            return
+
+        service_name = labels['com.docker.compose.service']
+        service = cls._NAME_RE.sub('_', service_name).upper()
+        details = {}
+        for port_info in container_info['Ports']:
+            key = '{0}:{1}'.format(service_name, port_info['PrivatePort'])
+            details[key] = {'protocol': port_info['Type'],
+                            'ip_address': cls.docker_ip,
+                            'public_port': port_info['PublicPort'],
+                            'private_port': port_info['PrivatePort']}
+            _logger.debug('added %s => %r', key, details[key])
+
+        return details
+
+
+class TestCase(DockerDiscoveryMixin, EnvironmentMixin, unittest.TestCase):
 
     def install_docker_environment(self):
         """
@@ -178,23 +192,18 @@ class DockerEnvironmentMixin(object):
         """
         for service_key, service_info in self.docker_services.items():
             service_name, _ = service_key.split(':')
-            self.process_docker_service(service_name.upper(),
-                                        service_info['protocol'],
-                                        service_info['ip_address'],
-                                        service_info['internal-port'],
-                                        service_info['port'])
+            self.process_docker_service(service_name, **service_info)
 
-    def process_docker_service(self, name, proto, ip, priv_port, pub_port):
+    def process_docker_service(self, name, protocol, ip_address,
+            public_port, private_port):
+
+
         _logger.debug('setting environment for %s', name)
-        base_key = '{0}_PORT_{1}_{2}'.format(name, priv_port, proto.upper())
-        self.setenv(base_key, '{0}://{1}:{2}'.format(proto, ip, pub_port))
-        self.setenv(base_key + '_ADDR', ip)
-        self.setenv(base_key + '_PORT', pub_port)
-        self.setenv(base_key + '_PROTO', proto)
+        base_key = '{0}_PORT_{1}_{2}'.format(name.upper(), private_port,
+                                             protocol.upper())
+        self.setenv(base_key, '{0}://{1}:{2}'.format(protocol, ip_address,
+                                                     public_port))
+        self.setenv(base_key + '_ADDR', ip_address)
+        self.setenv(base_key + '_PORT', public_port)
+        self.setenv(base_key + '_PROTO', protocol)
 
-
-class TestCase(EnvironmentMixin, DockerEnvironmentMixin, unittest.TestCase):
-
-    def setUp(self):
-        self.install_docker_environment()
-        super(TestCase, self).setUp()
